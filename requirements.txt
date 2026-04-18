@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+tqsdk
+pandas
+numpy
+anthropic
+openai
+httpx
+python-dotenv
