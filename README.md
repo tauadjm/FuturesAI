@@ -1,3 +1,4 @@
+
 # FuturesAI — 中国商品期货ai自动交易系统
 
 > 将大语言模型（LLM）接入中国商品期货市场，实现从行情订阅、AI 分析到自动下单的全链路自主交易；同时回测系统支持 AI 策略的历史验证。
@@ -11,7 +12,13 @@
 系统支持同时分析多个商品期货合约，AI 每根 K 线收盘后自动触发分析，输出开仓/持仓/平仓/反手决策，并通过追踪止损守卫管理风险。配套回测系统支持逐根 K 线重建市场上下文、调用真实 LLM 决策并模拟追踪止损出场，实现 AI 策略的历史验证。
 
 ---
+<img width="2907" height="1364" alt="屏幕截图 2026-04-19 144850" src="https://github.com/user-attachments/assets/74c2df6a-5c4b-4d9f-9dab-2a7dc81ad83a" />
 
+<img width="2919" height="1379" alt="屏幕截图 2026-04-19 144803" src="https://github.com/user-attachments/assets/7f448661-6647-453b-8dac-037919f3d270" />
+
+<img width="2902" height="1362" alt="屏幕截图 2026-04-19 145007" src="https://github.com/user-attachments/assets/0afb68a6-f46b-47f8-9e5a-a4f7d63c7bfa" />
+
+---
 ## 系统架构
 
 **实时交易路径**
