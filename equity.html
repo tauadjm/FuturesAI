@@ -707,9 +707,11 @@ function drawCumulativeChart(canvasId, trades, singleColor, snapshotMode){
 
   const modelsInData=[...new Set(trades.map(r=>r.model||'?'))];
   const tTimes=trades.map(r=>r.time||'');
-  const tMin=tTimes[0], tMax=tTimes[tTimes.length-1];
-  const tRange=(new Date(tMax)-new Date(tMin))||1;
-  const xOf=t=>PAD.left+Math.min(1,Math.max(0,(new Date(t)-new Date(tMin))/tRange))*cW;
+  // 等间距：按记录索引排列，消除周末/节假日空白
+  const tIndex={};
+  tTimes.forEach((t,i)=>{ if(!(t in tIndex)) tIndex[t]=i; });
+  const tLen=tTimes.length;
+  const xOf=t=>PAD.left+((tIndex[t]??0)/(tLen-1||1))*cW;
 
   const series=modelsInData.map((m)=>{
     const pts=trades.filter(r=>(r.model||'?')===m).map(r=>({t:r.time,v:r.cumulative||0}));
