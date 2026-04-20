@@ -312,7 +312,7 @@ async def precompute_structure(req: PrecomputeRequest):
         )
         out["测量目标向上"] = features.get("测量目标向上", [])
         out["测量目标向下"] = features.get("测量目标向下", [])
-        out["最近3根信号棒评级"] = features.get("最近3根信号棒评级", [])
+        out["信号棒评级"] = features.get("_last_bar_rating")
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning("build_features failed in precompute: %s", e)

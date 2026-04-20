@@ -439,15 +439,10 @@ tr:hover td { background:var(--ghost) }
         </div>
 
         <!-- EMA组 -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:5px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:5px">
           <div class="pg-item"><div class="pg-label">EMA缺口</div><div class="pg-val" id="pre-ema-gap">—</div></div>
           <div class="pg-item"><div class="pg-label">EMA方向</div><div class="pg-val" id="pre-ema-dir">—</div></div>
-        </div>
-
-        <!-- 信号棒评级 -->
-        <div style="margin-bottom:5px">
-          <div class="pg-label" style="margin-bottom:3px">信号棒评级（近3根）</div>
-          <div id="pre-bar-ratings" style="font-family:var(--mono);font-size:10px;color:var(--text)">—</div>
+          <div class="pg-item"><div class="pg-label">信号棒评级</div><div class="pg-val" id="pre-bar-rating">—</div></div>
         </div>
 
         <!-- 区间信息（有值才显示） -->
@@ -1277,17 +1272,12 @@ function renderPrecompute(data) {
   document.getElementById('pre-ema-dir').textContent = ema['EMA方向'] ?? '—';
 
   // ── 信号棒评级 ──
-  const ratings = data['最近3根信号棒评级'];
-  const ratingsEl = document.getElementById('pre-bar-ratings');
-  if (Array.isArray(ratings) && ratings.length) {
-    ratingsEl.innerHTML = ratings.map(r => {
-      const rt = r['评级'] || r['rating'] || '—';
-      const color = rt.includes('强') ? '#f59e0b' : rt.includes('弱') || rt === '十字星' ? 'var(--muted)' : 'var(--text)';
-      return `<span style="color:${color};margin-right:10px">${rt}</span>`;
-    }).join('');
-  } else {
-    ratingsEl.textContent = '—';
-  }
+  const rating = data['信号棒评级'];
+  const ratingEl = document.getElementById('pre-bar-rating');
+  ratingEl.textContent = rating ?? '—';
+  ratingEl.style.color = rating && rating.includes('强') ? '#f59e0b'
+    : rating && (rating.includes('弱') || rating === '十字星') ? 'var(--muted)'
+    : 'var(--text)';
 
   // ── 震荡区间（有值才显示） ──
   const hi  = data['交易区间上沿'];
