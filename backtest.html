@@ -1832,7 +1832,7 @@ function renderStats(stats, trades) {
     tr.title = '点击跳转到该K线';
     tr.innerHTML = `
       <td style="color:var(--muted)">${i + 1}</td>
-      <td style="color:var(--dim)">${t.bar_time ? new Date((t.bar_time + 28800) * 1000).toUTCString().slice(5,23) : '—'}</td>
+      <td style="color:var(--dim)">${t.bar_time ? (d => `${d.getUTCFullYear()}.${d.getUTCMonth()+1}.${d.getUTCDate()} ${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}`)(toCst(t.bar_time + 28800)) : '—'}</td>
       <td class="${t.direction === 'LONG' ? 'td-long' : 'td-short'}">${t.direction === 'LONG' ? '做多' : '做空'}</td>
       <td class="${resolvedType === 'SL' ? 'td-exit-sl' : resolvedType === 'TP' || resolvedType === 'TSL' ? 'td-exit-tp' : 'td-exit-mb'}">${exitTypeMap[resolvedType] || t.exit_type || '—'}</td>
       <td class="${pnlR >= 0 ? 'td-win' : 'td-loss'}">${pnlR >= 0 ? '+' : ''}${pnlR.toFixed(2)}</td>
