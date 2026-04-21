@@ -154,6 +154,11 @@ python analyze_trades.py --chart --show        # 生成图表并弹出预览
 
 > `--chart` 模式需要 `matplotlib`（`pip install matplotlib`）
 
+<img width="2683" height="1636" alt="analyze_report_20260422_025322_claude2api" src="https://github.com/user-attachments/assets/f3c95a68-f033-4afa-8726-3a0e9a112ad1" />
+
+
+<img width="2681" height="1636" alt="analyze_report_20260422_025322_deepseek2" src="https://github.com/user-attachments/assets/be4f2bd0-d55b-4962-bd7a-d72f0bca811c" />
+
 ---
 
 ## 价格行为学交易策略
