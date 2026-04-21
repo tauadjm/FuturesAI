@@ -2,17 +2,20 @@
 analyze_trades.py — 交易统计分析脚本
 
 用法：
-    python analyze_trades.py                  # 自动读取 config.get_data_root()（live/sim 隔离）
-    python analyze_trades.py --data ./mydata  # 指定数据目录
-    python analyze_trades.py --model claude   # 只看某个模型
-    python analyze_trades.py --days 7         # 只看最近7天
-    python analyze_trades.py --data "E:\AI期货交易\CLAUDE AI\DATA\sim"
+    python analyze_trades.py                        # 自动读取 config.get_data_root()（live/sim 隔离）
+    python analyze_trades.py --data ./mydata        # 指定数据目录
+    python analyze_trades.py --model claude         # 只看某个模型
+    python analyze_trades.py --days 7              # 只看最近7天
+    python analyze_trades.py --chart               # 额外生成多维度分析图表 PNG
+    python analyze_trades.py --chart --show        # 生成图表并弹出预览窗口
+    python analyze_trades.py --data "E:\AI期货交易\FuturesAI\DATA\sim" --days 30 --chart
 
 输出：
-    终端打印完整统计报告
-    同目录生成 trade_report.txt（方便保存）
+    终端打印完整统计报告（含分组对比 / 归因分析 / 关键结论）
+    trade_report.txt        — 报告文本（同目录）
+    analyze_report_*.png    — 多维度图表（仅 --chart 时生成，需 matplotlib）
 
-依赖：Python 3.8+ 标准库，无需安装任何第三方包
+依赖：Python 3.8+ 标准库；--chart 模式额外需要 matplotlib / numpy
 """
 
 import json
@@ -341,6 +344,7 @@ def generate_report(
     matched: list[dict],
     model_filter: str,
     days: int,
+    show_per_model: bool = True,
 ) -> str:
     lines = []
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -452,6 +456,17 @@ def generate_report(
         lines.append(f"    次数:{s['交易次数']}  胜率:{s['胜率']}%  总盈亏:{s['总盈亏']:+.2f}")
         lines.append(f"    盈亏比:{s['盈亏比']:.2f}  期望值:{s['期望值']:+.2f} {ev_flag}")
 
+    # 设置类型胜率排名（≥3笔）
+    wr_ranked = [(s, st) for s, st in setup_stats.items()
+                 if st["交易次数"] >= 3 and s not in ("无法匹配", "未知")]
+    wr_ranked.sort(key=lambda x: -x[1]["胜率"])
+    if wr_ranked:
+        lines.append(f"\n  ── 胜率排名 TOP{min(8, len(wr_ranked))}（≥3笔）──")
+        for rank, (setup, s) in enumerate(wr_ranked[:8], 1):
+            bar_n = min(int(s["胜率"] / 10), 10)
+            bar = "█" * bar_n + "░" * (10 - bar_n)
+            lines.append(f"    #{rank} {setup:<14} 胜率:{s['胜率']:>5.1f}% [{bar}]  次数:{s['交易次数']:>3}  期望:{s['期望值']:>+8.2f}")
+
     # ── 5. 按市场状态（趋势强度）分组 ────────────────────────
     # 五类：强上升趋势 / 弱上升趋势 / 交易区间 / 弱下降趋势 / 强下降趋势
     lines.append("\n" + SEP2)
@@ -519,6 +534,32 @@ def generate_report(
         lines.append(f"  {flag} {sess:<13}  次数:{s['交易次数']:>3}  胜率:{s['胜率']:>5.1f}%  "
                      f"总盈亏:{s['总盈亏']:>+10.2f}  期望:{s['期望值']:>+8.2f}")
 
+    # ── 10b. 时段 × 市场状态 交叉矩阵 ───────────────────────────
+    _cross_sessions = ["早盘(09-11:30)", "午后(13-15)", "夜盘(21-03)"]
+    _cross_states   = ["强上升趋势", "弱上升趋势", "交易区间", "弱下降趋势", "强下降趋势"]
+    _cross_data = {
+        (sess, state): [
+            t.get("close_profit", 0.0) for t in matched
+            if _trade_session(t.get("time", "")) == sess and t.get("_市场状态") == state
+        ]
+        for sess in _cross_sessions for state in _cross_states
+    }
+    if any(len(v) >= 3 for v in _cross_data.values()):
+        lines.append("\n" + SEP2)
+        lines.append("【时段 × 市场状态 交叉（胜率% / 笔数，< 3笔显示 ─）】")
+        _hdr = f"  {'时段':<15}" + "".join(f" {st[:5]:<9}" for st in _cross_states)
+        lines.append(_hdr)
+        for sess in _cross_sessions:
+            row = f"  {sess:<15}"
+            for state in _cross_states:
+                cell = _cross_data[(sess, state)]
+                if len(cell) >= 3:
+                    wr = safe_div(sum(1 for p in cell if p > 0), len(cell)) * 100
+                    row += f" {wr:>3.0f}%({len(cell):>2})"
+                else:
+                    row += f" {'─':>8}"
+            lines.append(row)
+
     # ── 11. 模型 × 设置类型 交叉矩阵 ─────────────────────────
     lines.append("\n" + SEP2)
     lines.append("【模型 × 设置类型 交叉矩阵（期望值 / 笔数）】")
@@ -563,6 +604,11 @@ def generate_report(
             f"{flag}{abs(pnl):>8.2f}{r_str}{hold}"
         )
 
+    # ── 归因分析 ────────────────────────────────────────────
+    attr_text = attribution_report(matched)
+    if attr_text:
+        lines.append(attr_text)
+
     # ── 13. 关键结论 ─────────────────────────────────────────
     lines.append("\n" + SEP)
     lines.append("【关键结论与建议】")
@@ -606,11 +652,473 @@ def generate_report(
         lines.append(f"  R倍数：平均{avg_r:+.2f}R  正收益率:{safe_div(r_win,len(r_vals))*100:.0f}%  "
                      f"({'系统整体正期望' if avg_r > 0 else '系统整体负期望，需改进入场或止损策略'})")
 
+    # ── 各模型独立完整分析 ───────────────────────────────────
+    all_model_ids = sorted(set(t.get("model", "") for t in trades if t.get("model")))
+    if show_per_model and len(all_model_ids) > 1:
+        lines.append("\n" + SEP)
+        lines.append(f"  各模型独立完整分析（共 {len(all_model_ids)} 个模型）")
+        lines.append(SEP)
+        for mid in all_model_ids:
+            trades_m  = [t for t in trades  if t.get("model") == mid]
+            matched_m = [t for t in matched if t.get("model") == mid]
+            section   = generate_per_model_section(mid, matched_m, trades_m)
+            if section:
+                lines.append(section)
+
     lines.append("\n" + SEP)
     lines.append("  报告结束")
     lines.append(SEP)
 
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# 归因分析
+# ─────────────────────────────────────────────────────────────
+
+def attribution_report(matched: list[dict]) -> str:
+    """对比盈利 vs 亏损交易在入场特征上的分布差异"""
+    wins   = [t for t in matched if t.get("close_profit", 0.0) > 0]
+    losses = [t for t in matched if t.get("close_profit", 0.0) < 0]
+    if not wins or not losses:
+        return ""
+
+    lines = []
+    lines.append("\n" + SEP2)
+    lines.append("【归因分析：盈利 vs 亏损交易入场特征对比】")
+    lines.append(f"  样本：盈利 {len(wins)} 笔 / 亏损 {len(losses)} 笔")
+
+    def _dist(group: list[dict], key_fn) -> dict[str, float]:
+        d: dict[str, int] = defaultdict(int)
+        for t in group:
+            d[key_fn(t)] += 1
+        n = len(group)
+        return {k: safe_div(v, n) * 100 for k, v in d.items()}
+
+    def _render_feature(title: str, key_fn, categories: list[str]):
+        w_dist = _dist(wins,   key_fn)
+        l_dist = _dist(losses, key_fn)
+        all_cats = [c for c in categories if c in w_dist or c in l_dist]
+        if not all_cats:
+            return
+        lines.append(f"\n  ● {title}")
+        lines.append(f"    {'类别':<14}  {'盈利占比':>8}  {'亏损占比':>8}  {'差值△':>8}")
+        lines.append(f"    {'─'*14}  {'─'*8}  {'─'*8}  {'─'*8}")
+        for cat in all_cats:
+            wp    = w_dist.get(cat, 0.0)
+            lp    = l_dist.get(cat, 0.0)
+            delta = wp - lp
+            marker = " ↑" if delta > 15 else (" ↓" if delta < -15 else "  ")
+            lines.append(f"    {cat:<14}  {wp:>7.1f}%  {lp:>7.1f}%  {delta:>+7.1f}%{marker}")
+
+    STATE_ORDER = ["强上升趋势", "弱上升趋势", "交易区间", "弱下降趋势", "强下降趋势", "无法匹配", "未知"]
+    _render_feature("市场状态",
+                    lambda t: t.get("_市场状态", "未知"),
+                    STATE_ORDER)
+    _render_feature("信号棒强度",
+                    lambda t: t.get("_信号棒强度", "未知"),
+                    ["强", "中", "弱", "无", "未知", "无法匹配"])
+    _render_feature("风险等级",
+                    lambda t: t.get("_风险等级", "未知"),
+                    ["低", "中", "高", "未知", "无法匹配"])
+
+    # 设置类型 Top-5（按总出现次数）
+    setup_counts: dict[str, int] = defaultdict(int)
+    for t in matched:
+        setup_counts[t.get("_设置类型", "未知")] += 1
+    top_setups = [s for s, _ in sorted(setup_counts.items(), key=lambda x: -x[1])
+                  if s not in ("无法匹配", "未知", "无有效设置")][:5]
+    if top_setups:
+        def _setup_key(t):
+            v = t.get("_设置类型", "其他")
+            return v if v in top_setups else "其他"
+        _render_feature("设置类型(Top5)", _setup_key, top_setups + ["其他"])
+
+    lines.append("\n  注：↑ 盈利中更常见(差值>+15%)  ↓ 亏损中更常见(差值<-15%)")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# 单模型独立分析块
+# ─────────────────────────────────────────────────────────────
+
+_STATE_ORDER = ["强上升趋势", "弱上升趋势", "交易区间", "弱下降趋势", "强下降趋势"]
+
+
+def generate_per_model_section(model_id: str,
+                                matched_m: list[dict],
+                                trades_m:  list[dict]) -> str:
+    """生成单个模型的完整分析块（品种/市场状态/设置类型/归因）"""
+    if not trades_m:
+        return ""
+
+    lines = []
+    profits_m = [t.get("close_profit", 0.0) for t in trades_m]
+    s    = stats_block(profits_m)
+    flag = "✅" if s["总盈亏"] > 0 else "❌"
+
+    SEP_M  = "═" * 64
+    SEP_M2 = "─" * 56
+
+    lines.append(f"\n{SEP_M}")
+    lines.append(f"  {flag} 模型独立分析：{model_id}  ({s['交易次数']}笔 / 胜率{s['胜率']}% / 总盈亏{s['总盈亏']:+.0f}元)")
+    lines.append(SEP_M)
+    lines.append(fmt_stat(s))
+
+    # R倍数摘要
+    r_vals_m = [t["_R倍数"] for t in matched_m if t.get("_R倍数") is not None]
+    if r_vals_m:
+        avg_r = safe_div(sum(r_vals_m), len(r_vals_m))
+        lines.append(f"    R倍数均值：{avg_r:+.2f}R  ({len(r_vals_m)}笔可计算)")
+
+    # ── 按品种 ──────────────────────────────────────────────
+    by_sym_m: dict[str, list[float]] = defaultdict(list)
+    for t in trades_m:
+        sym = t.get("symbol", "未知").replace("KQ.m@", "")
+        by_sym_m[sym].append(t.get("close_profit", 0.0))
+    if by_sym_m:
+        lines.append(f"\n  {SEP_M2}")
+        lines.append("  按品种")
+        for sym, p in sorted(by_sym_m.items(), key=lambda x: -sum(x[1])):
+            s2 = stats_block(p)
+            f2 = "✅" if s2["总盈亏"] > 0 else "❌"
+            lines.append(f"  {f2} {sym:<20} 次数:{s2['交易次数']:>3}  胜率:{s2['胜率']:>5.1f}%  "
+                         f"总盈亏:{s2['总盈亏']:>+10.2f}  期望:{s2['期望值']:>+8.2f}")
+
+    # ── 按市场状态 ───────────────────────────────────────────
+    by_mkt_m: dict[str, list[float]] = defaultdict(list)
+    for t in matched_m:
+        by_mkt_m[t.get("_市场状态", "未知")].append(t.get("close_profit", 0.0))
+    if by_mkt_m:
+        lines.append(f"\n  {SEP_M2}")
+        lines.append("  按市场状态")
+        ordered = [st for st in _STATE_ORDER if st in by_mkt_m]
+        others  = sorted(st for st in by_mkt_m if st not in _STATE_ORDER)
+        for mkt in ordered + others:
+            s2 = stats_block(by_mkt_m[mkt])
+            f2 = "✅" if s2["总盈亏"] > 0 else "❌"
+            lines.append(f"  {f2} {mkt:<10} 次数:{s2['交易次数']:>3}  胜率:{s2['胜率']:>5.1f}%  "
+                         f"总盈亏:{s2['总盈亏']:>+10.2f}  期望:{s2['期望值']:>+8.2f}")
+
+    # ── 设置类型胜率排名 ────────────────────────────────────
+    by_setup_m: dict[str, list[float]] = defaultdict(list)
+    for t in matched_m:
+        by_setup_m[t.get("_设置类型", "未知")].append(t.get("close_profit", 0.0))
+    wr_ranked_m = [
+        (setup, stats_block(p)) for setup, p in by_setup_m.items()
+        if len(p) >= 2 and setup not in ("无法匹配", "未知")
+    ]
+    wr_ranked_m.sort(key=lambda x: -x[1]["胜率"])
+    if wr_ranked_m:
+        lines.append(f"\n  {SEP_M2}")
+        lines.append(f"  设置类型胜率排名（≥2笔，共{len(wr_ranked_m)}种）")
+        for rank, (setup, s2) in enumerate(wr_ranked_m[:10], 1):
+            bar_n = min(int(s2["胜率"] / 10), 10)
+            bar   = "█" * bar_n + "░" * (10 - bar_n)
+            ev_tag = "👍" if s2["期望值"] > 0 else "👎"
+            lines.append(f"    #{rank:<2} {setup:<16} 胜率:{s2['胜率']:>5.1f}% [{bar}]"
+                         f"  次数:{s2['交易次数']:>3}  期望:{s2['期望值']:>+8.2f} {ev_tag}")
+
+    # ── 归因分析 ────────────────────────────────────────────
+    attr = attribution_report(matched_m)
+    if attr:
+        lines.append(attr)
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────
+# 可视化图表
+# ─────────────────────────────────────────────────────────────
+
+def generate_chart(matched: list[dict], trades: list[dict],
+                   out_path: pathlib.Path, show: bool = False,
+                   model_id: str = ""):
+    """生成多维度分析图表并保存为 PNG"""
+    try:
+        import matplotlib
+        if not show:
+            matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        import matplotlib.font_manager as fm
+        import numpy as np
+    except ImportError:
+        print("⚠️  matplotlib / numpy 未安装，跳过图表（pip install matplotlib numpy）")
+        return
+
+    # 中文字体（Windows / Linux 均可用）
+    cjk_candidates = ["Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei",
+                      "Noto Sans CJK SC", "Source Han Sans CN"]
+    available = {f.name for f in fm.fontManager.ttflist}
+    for font in cjk_candidates:
+        if font in available:
+            plt.rcParams["font.sans-serif"] = [font] + plt.rcParams.get("font.sans-serif", [])
+            break
+    plt.rcParams["axes.unicode_minus"] = False
+
+    # 调色板：语义明确，全局统一
+    C_WIN   = "#27ae60"   # 深绿 = 盈利 / 胜率高
+    C_LOSS  = "#c0392b"   # 深红 = 亏损 / 胜率低
+    C_LINE  = "#2980b9"   # 蓝   = 折线 / 中性数据
+    C_REF   = "#7f8c8d"   # 灰   = 参考线 / 数据不足
+    C_ZERO  = "#2c3e50"   # 深色 = 零轴
+
+    STATE_ORDER = ["强上升趋势", "弱上升趋势", "交易区间", "弱下降趋势", "强下降趋势"]
+
+    def _add_bar_labels(ax, rects, fmt="{:.0f}%", color="black", fontsize=8):
+        """在柱子顶端标注数值"""
+        for rect in rects:
+            h = rect.get_height()
+            ax.text(rect.get_x() + rect.get_width() / 2, h + 1,
+                    fmt.format(h), ha="center", va="bottom",
+                    fontsize=fontsize, color=color, fontweight="bold")
+
+    def _win_color(wr):
+        return C_WIN if wr >= 50 else C_LOSS
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 11))
+    fig.patch.set_facecolor("#f8f9fa")
+    for ax in axes.flat:
+        ax.set_facecolor("#ffffff")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    total_pnl = sum(t.get("close_profit", 0.0) for t in trades)
+    win_cnt   = sum(1 for t in trades if t.get("close_profit", 0.0) > 0)
+    wr_all    = safe_div(win_cnt, len(trades)) * 100 if trades else 0
+    model_label = f"模型：{model_id}  |  " if model_id else ""
+    fig.suptitle(
+        f"AI 期货交易系统 — 多维度分析报告\n"
+        f"{model_label}共 {len(trades)} 笔  胜率 {wr_all:.1f}%  累计盈亏 {total_pnl:+.0f} 元",
+        fontsize=13, fontweight="bold", y=0.99
+    )
+
+    # ── 图1：胜率 × 品种 ─────────────────────────────────────
+    ax1 = axes[0, 0]
+    by_sym: dict[str, list[float]] = defaultdict(list)
+    for t in trades:
+        sym = t.get("symbol", "未知").replace("KQ.m@", "")
+        by_sym[sym].append(t.get("close_profit", 0.0))
+    sym_wr = [(sym, stats_block(p)["胜率"], len(p)) for sym, p in by_sym.items() if len(p) >= 2]
+    sym_wr.sort(key=lambda x: -x[1])
+    if sym_wr:
+        labels = [f"{s[0]}\n{s[2]}笔" for s in sym_wr]
+        wrs    = [s[1] for s in sym_wr]
+        colors = [_win_color(w) for w in wrs]
+        bars   = ax1.bar(range(len(labels)), wrs, color=colors, alpha=0.85, width=0.6)
+        _add_bar_labels(ax1, bars)
+        ref = ax1.axhline(50, color=C_REF, linestyle="--", linewidth=1)
+        ax1.set_xticks(range(len(labels)))
+        ax1.set_xticklabels(labels, fontsize=7, rotation=0, ha="center")
+        ax1.set_ylabel("胜率 (%)")
+        ax1.set_ylim(0, 108)
+        ax1.legend(
+            handles=[
+                mpatches.Patch(color=C_WIN,  label="胜率 ≥ 50%（盈利品种）"),
+                mpatches.Patch(color=C_LOSS, label="胜率 < 50%（亏损品种）"),
+                plt.Line2D([0], [0], color=C_REF, linestyle="--", label="50% 基准线"),
+            ],
+            fontsize=7, loc="upper right"
+        )
+    ax1.set_title("各品种胜率对比", fontsize=10, fontweight="bold", pad=8)
+
+    # ── 图2：胜率 × 市场状态 ─────────────────────────────────
+    ax2 = axes[0, 1]
+    by_mkt: dict[str, list[float]] = defaultdict(list)
+    for t in matched:
+        mkt = t.get("_市场状态", "未知")
+        if mkt in STATE_ORDER:
+            by_mkt[mkt].append(t.get("close_profit", 0.0))
+    mkt_data = [(mkt, stats_block(by_mkt[mkt])["胜率"], len(by_mkt[mkt]))
+                for mkt in STATE_ORDER if mkt in by_mkt]
+    if mkt_data:
+        labels2 = [f"{s[0]}\n{s[2]}笔" for s in mkt_data]
+        wrs2    = [s[1] for s in mkt_data]
+        colors2 = [_win_color(w) for w in wrs2]
+        bars2   = ax2.bar(range(len(labels2)), wrs2, color=colors2, alpha=0.85, width=0.5)
+        _add_bar_labels(ax2, bars2)
+        ax2.axhline(50, color=C_REF, linestyle="--", linewidth=1)
+        ax2.set_xticks(range(len(labels2)))
+        ax2.set_xticklabels(labels2, fontsize=8, ha="center")
+        ax2.set_ylabel("胜率 (%)")
+        ax2.set_ylim(0, 108)
+        ax2.legend(
+            handles=[
+                mpatches.Patch(color=C_WIN,  label="胜率 ≥ 50%"),
+                mpatches.Patch(color=C_LOSS, label="胜率 < 50%"),
+                plt.Line2D([0], [0], color=C_REF, linestyle="--", label="50% 基准线"),
+            ],
+            fontsize=7, loc="upper right"
+        )
+    ax2.set_title("各市场状态下胜率（趋势五分类）", fontsize=10, fontweight="bold", pad=8)
+
+    # ── 图3：盈亏分布直方图 ──────────────────────────────────
+    ax3 = axes[0, 2]
+    win_p  = [t.get("close_profit", 0.0) for t in trades if t.get("close_profit", 0.0) > 0]
+    loss_p = [t.get("close_profit", 0.0) for t in trades if t.get("close_profit", 0.0) < 0]
+    if win_p or loss_p:
+        all_p = win_p + loss_p
+        bins  = np.linspace(min(all_p), max(all_p), 25)
+        if win_p:
+            ax3.hist(win_p,  bins=bins, color=C_WIN,  alpha=0.75,
+                     label=f"盈利 {len(win_p)} 笔  均值 {safe_div(sum(win_p),len(win_p)):+.0f}元")
+        if loss_p:
+            ax3.hist(loss_p, bins=bins, color=C_LOSS, alpha=0.75,
+                     label=f"亏损 {len(loss_p)} 笔  均值 {safe_div(sum(loss_p),len(loss_p)):+.0f}元")
+        zero_line = ax3.axvline(0, color=C_ZERO, linewidth=1.5, label="盈亏分界线 (0元)")
+        if win_p:
+            ax3.axvline(safe_div(sum(win_p), len(win_p)), color=C_WIN,
+                        linestyle=":", linewidth=1.2, label=f"盈利均值")
+        if loss_p:
+            ax3.axvline(safe_div(sum(loss_p), len(loss_p)), color=C_LOSS,
+                        linestyle=":", linewidth=1.2, label=f"亏损均值")
+        ax3.set_xlabel("单笔盈亏金额 (元)")
+        ax3.set_ylabel("出现次数")
+        ax3.legend(fontsize=7)
+    ax3.set_title("单笔盈亏分布（绿=盈利 / 红=亏损）", fontsize=10, fontweight="bold", pad=8)
+
+    # ── 图4：权益曲线 ────────────────────────────────────────
+    ax4 = axes[1, 0]
+    trades_sorted = sorted(trades, key=lambda x: x.get("time", ""))
+    cumulative: list[float] = []
+    acc = 0.0
+    for t in trades_sorted:
+        acc += t.get("close_profit", 0.0)
+        cumulative.append(acc)
+    if cumulative:
+        xs   = list(range(1, len(cumulative) + 1))
+        ax4.plot(xs, cumulative, color=C_LINE, linewidth=1.8, zorder=3)
+        ax4.axhline(0, color=C_ZERO, linewidth=1, linestyle="--")
+        ax4.fill_between(xs, cumulative, 0,
+                         where=[c >= 0 for c in cumulative],
+                         alpha=0.25, color=C_WIN,  label="累计盈利区间")
+        ax4.fill_between(xs, cumulative, 0,
+                         where=[c < 0  for c in cumulative],
+                         alpha=0.25, color=C_LOSS, label="累计亏损区间")
+        # 标注最终收益
+        final = cumulative[-1]
+        ax4.annotate(
+            f"最终 {final:+.0f}元",
+            xy=(xs[-1], final),
+            xytext=(-50, 12 if final >= 0 else -18),
+            textcoords="offset points",
+            fontsize=8, fontweight="bold",
+            color=C_WIN if final >= 0 else C_LOSS,
+            arrowprops=dict(arrowstyle="->", color=C_REF, lw=0.8),
+        )
+        ax4.set_xlabel(f"交易序号（共 {len(cumulative)} 笔，按时间排列）")
+        ax4.set_ylabel("累计盈亏 (元)")
+        ax4.legend(fontsize=7, loc="upper left")
+    ax4.set_title("累计权益曲线（蓝线=权益走势）", fontsize=10, fontweight="bold", pad=8)
+
+    # ── 图5：市场状态 × 设置类型热力图（胜率）────────────────
+    ax5 = axes[1, 1]
+    setup_cnts: dict[str, int] = defaultdict(int)
+    for t in matched:
+        setup_cnts[t.get("_设置类型", "")] += 1
+    top_setups = [s for s, _ in sorted(setup_cnts.items(), key=lambda x: -x[1])
+                  if s not in ("无法匹配", "未知", "无有效设置", "")][:6]
+    if STATE_ORDER and top_setups:
+        hm     = np.full((len(STATE_ORDER), len(top_setups)), np.nan)
+        hm_cnt = np.zeros((len(STATE_ORDER), len(top_setups)), dtype=int)
+        for i, state in enumerate(STATE_ORDER):
+            for j, setup in enumerate(top_setups):
+                cell = [t.get("close_profit", 0.0) for t in matched
+                        if t.get("_市场状态") == state and t.get("_设置类型") == setup]
+                hm_cnt[i, j] = len(cell)
+                if len(cell) >= 2:
+                    hm[i, j] = safe_div(sum(1 for p in cell if p > 0), len(cell)) * 100
+        cmap = plt.cm.RdYlGn.copy()
+        cmap.set_bad(color="#d5d8dc")   # 灰色 = 样本不足
+        masked = np.ma.masked_invalid(hm)
+        im = ax5.imshow(masked, cmap=cmap, vmin=0, vmax=100, aspect="auto")
+        cb = fig.colorbar(im, ax=ax5, fraction=0.03, pad=0.04)
+        cb.set_label("胜率%（红=低 / 黄=50% / 绿=高）", fontsize=7)
+        ax5.set_xticks(range(len(top_setups)))
+        ax5.set_xticklabels([s[:9] for s in top_setups], fontsize=7, rotation=25, ha="right")
+        ax5.set_yticks(range(len(STATE_ORDER)))
+        ax5.set_yticklabels(STATE_ORDER, fontsize=8)
+        for i in range(len(STATE_ORDER)):
+            for j in range(len(top_setups)):
+                v   = hm[i, j]
+                cnt = hm_cnt[i, j]
+                if not np.isnan(v):
+                    txt_color = "white" if (v < 25 or v > 75) else "black"
+                    ax5.text(j, i, f"{v:.0f}%\n({cnt}笔)",
+                             ha="center", va="center", fontsize=7,
+                             color=txt_color, fontweight="bold")
+                else:
+                    ax5.text(j, i, f"{'—' if cnt == 0 else f'{cnt}笔'}",
+                             ha="center", va="center", fontsize=7, color="#888888")
+        ax5.set_title("胜率热力图：市场状态 × 设置类型\n（灰色=样本<2笔，不足以统计）",
+                      fontsize=10, fontweight="bold", pad=8)
+    else:
+        ax5.text(0.5, 0.5, "数据不足", ha="center", va="center",
+                 transform=ax5.transAxes, fontsize=12, color=C_REF)
+        ax5.set_title("胜率热力图：市场状态 × 设置类型", fontsize=10, fontweight="bold", pad=8)
+
+    # ── 图6：归因差值条形图 ──────────────────────────────────
+    ax6 = axes[1, 2]
+    wins_m   = [t for t in matched if t.get("close_profit", 0.0) > 0]
+    losses_m = [t for t in matched if t.get("close_profit", 0.0) < 0]
+    if wins_m and losses_m:
+        def _pct(grp, key, val):
+            return safe_div(sum(1 for t in grp if t.get(key) == val), len(grp)) * 100
+
+        attr_items: list[tuple[str, float, str]] = []
+        for state in STATE_ORDER:
+            delta = _pct(wins_m, "_市场状态", state) - _pct(losses_m, "_市场状态", state)
+            attr_items.append((f"[趋势] {state}", delta, "trend"))
+        for strength in ["强", "中", "弱"]:
+            delta = _pct(wins_m, "_信号棒强度", strength) - _pct(losses_m, "_信号棒强度", strength)
+            attr_items.append((f"[棒强] {strength}信号棒", delta, "bar"))
+        for risk in ["低", "中", "高"]:
+            delta = _pct(wins_m, "_风险等级", risk) - _pct(losses_m, "_风险等级", risk)
+            attr_items.append((f"[风险] {risk}风险等级", delta, "risk"))
+
+        attr_items.sort(key=lambda x: x[1])
+        attr_labels = [a[0] for a in attr_items]
+        attr_vals   = [a[1] for a in attr_items]
+        attr_colors = [C_WIN if v >= 0 else C_LOSS for v in attr_vals]
+
+        bars6 = ax6.barh(range(len(attr_labels)), attr_vals, color=attr_colors,
+                         alpha=0.85, height=0.6)
+        # 数值标签
+        for i, (bar, val) in enumerate(zip(bars6, attr_vals)):
+            offset = 0.5 if val >= 0 else -0.5
+            ax6.text(val + offset, i, f"{val:+.1f}%",
+                     va="center", ha="left" if val >= 0 else "right",
+                     fontsize=7.5, fontweight="bold",
+                     color=C_WIN if val >= 0 else C_LOSS)
+        ax6.axvline(0,   color=C_ZERO, linewidth=1.5)
+        ax6.axvline(15,  color=C_WIN,  linewidth=0.8, linestyle=":", alpha=0.6)
+        ax6.axvline(-15, color=C_LOSS, linewidth=0.8, linestyle=":", alpha=0.6)
+        ax6.set_yticks(range(len(attr_labels)))
+        ax6.set_yticklabels(attr_labels, fontsize=8)
+        ax6.set_xlabel("盈利交易占比 − 亏损交易占比（%）", fontsize=8)
+        ax6.legend(
+            handles=[
+                mpatches.Patch(color=C_WIN,  label="正值（绿）= 盈利交易中更常出现 → 有利特征"),
+                mpatches.Patch(color=C_LOSS, label="负值（红）= 亏损交易中更常出现 → 不利特征"),
+                plt.Line2D([0], [0], color=C_WIN,  linestyle=":", label="±15% 显著性参考线"),
+            ],
+            fontsize=6.5, loc="lower right"
+        )
+        ax6.set_title("归因分析：入场特征在盈利/亏损交易中的分布差异",
+                      fontsize=10, fontweight="bold", pad=8)
+    else:
+        ax6.text(0.5, 0.5, "样本不足（需同时有盈利和亏损交易）",
+                 ha="center", va="center", transform=ax6.transAxes,
+                 fontsize=10, color=C_REF)
+        ax6.set_title("归因分析", fontsize=10, fontweight="bold", pad=8)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.savefig(str(out_path), dpi=150, bbox_inches="tight")
+    print(f"\n📊 图表已保存：{out_path.resolve()}")
+    if show:
+        plt.show()
+    plt.close(fig)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -622,7 +1130,9 @@ def main():
     parser.add_argument("--data",  default=_default_data_dir, help=f"数据目录路径（默认：{_default_data_dir}）")
     parser.add_argument("--model", default="",     help="只分析某个模型（如 claude / deepseek）")
     parser.add_argument("--days",  default=0, type=int, help="只看最近N天（默认：全部）")
-    parser.add_argument("--out",   default="trade_report.txt", help="输出报告文件名")
+    parser.add_argument("--out",   default="trade_report.txt", help="合并报告文件名")
+    parser.add_argument("--chart", action="store_true", help="生成多维度分析图表 PNG")
+    parser.add_argument("--show",  action="store_true", help="生成图表后弹出预览窗口（需 --chart）")
     args = parser.parse_args()
 
     data_dir = pathlib.Path(args.data)
@@ -634,28 +1144,83 @@ def main():
     print(f"📂 数据目录：{data_dir.resolve()}")
     print("🔍 加载数据中...")
 
-    history, trades, opens = load_all_data(data_dir, args.model, args.days)
-    print(f"   分析记录：{len(history)} 条")
-    print(f"   平仓交易：{len(trades)} 笔")
+    # 一次性加载全量（model_filter="" 表示全部）
+    history_all, trades_all, opens_all = load_all_data(data_dir, args.model, args.days)
+    print(f"   分析记录：{len(history_all)} 条  平仓交易：{len(trades_all)} 笔")
 
-    if not history and not trades:
+    if not history_all and not trades_all:
         print("⚠️  没有找到任何数据，请检查目录路径")
         return
 
     print("🔗 匹配信号与交易中...")
-    matched = match_signals_to_trades(history, trades, opens)
-    matched_cnt = sum(1 for t in matched if t.get("_设置类型") != "无法匹配")
-    r_cnt = sum(1 for t in matched if t.get("_R倍数") is not None)
-    print(f"   成功匹配：{matched_cnt}/{len(trades)} 笔  其中可算R倍数：{r_cnt} 笔")
+    matched_all = match_signals_to_trades(history_all, trades_all, opens_all)
 
-    print("📊 生成报告中...")
-    report = generate_report(history, trades, matched, args.model, args.days)
+    # 检测实际有交易数据的模型列表
+    model_ids = sorted(set(t.get("model", "") for t in trades_all if t.get("model")))
 
-    print("\n" + report)
+    # ── 单模型模式（--model 指定 或 数据中只有一个模型）──────
+    if args.model or len(model_ids) <= 1:
+        report = generate_report(
+            history_all, trades_all, matched_all,
+            args.model, args.days, show_per_model=False,
+        )
+        print("\n" + report)
+        out_path = pathlib.Path(args.out)
+        out_path.write_text(report, encoding="utf-8")
+        print(f"\n✅ 报告已保存：{out_path.resolve()}")
+        if args.chart and trades_all:
+            ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+            base = pathlib.Path(__file__).parent
+            generate_chart(matched_all, trades_all,
+                           base / f"analyze_report_{ts}.png", show=args.show)
+        return
 
+    # ── 多模型模式：逐模型输出完整报告 ───────────────────────
+    print(f"\n🔎 检测到 {len(model_ids)} 个模型：{', '.join(model_ids)}")
+    print("─" * 64)
+
+    all_reports: list[str] = []
+    ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base = pathlib.Path(__file__).parent
+
+    for mid in model_ids:
+        # 在内存中按模型切片，无需重新读文件
+        h_m = [r for r in history_all if r.get("model_id", "") == mid]
+        t_m = [t for t in trades_all  if t.get("model", "")    == mid]
+        o_m = [o for o in opens_all   if o.get("model", "")    == mid]
+        if not t_m:
+            continue
+
+        matched_m = match_signals_to_trades(h_m, t_m, o_m)
+        report_m  = generate_report(h_m, t_m, matched_m, mid, args.days, show_per_model=False)
+
+        print("\n" + report_m)
+
+        # 每个模型单独保存 trade_report_{model}.txt
+        out_m = pathlib.Path(f"trade_report_{mid}.txt")
+        out_m.write_text(report_m, encoding="utf-8")
+        print(f"✅ {mid} 报告已保存：{out_m.resolve()}")
+
+        all_reports.append(report_m)
+
+        if args.chart:
+            generate_chart(matched_m, t_m,
+                           base / f"analyze_report_{ts}_{mid}.png",
+                           show=False, model_id=mid)
+
+    # 合并报告（含各模型汇总对比段）写入 trade_report.txt
+    combined = generate_report(
+        history_all, trades_all, matched_all,
+        "", args.days, show_per_model=True,
+    )
     out_path = pathlib.Path(args.out)
-    out_path.write_text(report, encoding="utf-8")
-    print(f"\n✅ 报告已保存到：{out_path.resolve()}")
+    out_path.write_text(combined, encoding="utf-8")
+    print(f"\n📋 合并报告已保存：{out_path.resolve()}")
+
+    if args.chart and trades_all:
+        generate_chart(matched_all, trades_all,
+                       base / f"analyze_report_{ts}_combined.png",
+                       show=args.show)
 
 
 if __name__ == "__main__":

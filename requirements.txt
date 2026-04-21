@@ -3,6 +3,7 @@ uvicorn
 tqsdk
 pandas
 numpy
+matplotlib
 anthropic
 openai
 httpx
